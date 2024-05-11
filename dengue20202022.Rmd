@@ -1,0 +1,424 @@
+---
+title: "Analizando Dengue 2020"
+author: "Luisa"
+date: "2023-05-4"
+output:
+ html_document:
+    fig_height: 8
+    fig_width: 12
+       #code_folding: "hide"
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 6
+    number_sections: true
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+# MAY THE FORTH BE WITH U
+
+En este trabajo, voy a usar las bases de datos de enfermedades por vectores que descargue en
+[https://datos.gob.ar/dataset/salud-vigilancia-enfermedades-por-virus-dengue-zika]
+
+
+Focalizandome solo en la Ciudad de Buenos Aires, mi idea inicial era comparar diceimbre 2020 con la base de dengue diciembre 2022, pero vi que esta ultima tiene solo 8 casos reportados en CABA.
+Por lo tanto, por ahora la dejo y hago todo el analisis, agrupacion y cositas a la base del 2020
+
+_Despues si encuentro una de 2022 o 2023 con mas casos en CABA veo de aplicare ese codigo y commpararlas y hacerles mas cosas._
+
+# LLAMANDO BIBLIOTECAS E IMPORTANDO BASE DE DATOS
+
+Para empezar, **llamo a las bibliotecas** que utilizare e **importo la base de datos** que yo me guarde en mi compu
+
+```{r llamando librerias y importando database, echo=TRUE, eval=TRUE, warning=FALSE}
+
+library(tidyverse)
+library(readxl)
+library(readr)
+library(writexl)
+library(gapminder)
+library(lubridate) #Para modificar las fechas
+library(treemapify)
+library(kableExtra)
+library(viridis)
+library(plotly)
+options(scipen = 999)
+
+dengue2020 <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/dengue2020.xlsx")
+
+# dengue2020 <- read_excel (path = "http://datos.salud.gob.ar/dataset/ceaa8e87-297e-4348-84b8-5c643e172500/resource/3e11a05a-8287-4954-ab08-f698dc0ff3e1/download/informacion-publica-dengue-zika-nacional-hasta-20201231_1.xlsx")
+#quise probar con el link de la pagina directamente pero no me deja 
+
+#dengue2022 <- read_csv2 (file = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/dengue2022.csv",  locale=locale(encoding="latin1"))
+
+```
+
+# EXPLORANDO BASES
+
+Silencio todo 2022 por ahora
+
+```{r explorando dengue2022, eval = FALSE, echo=TRUE}
+
+#dim(dengue2022)
+#summary(dengue2022)
+#str(dengue2022)
+
+#filtro para que solo me aparezcan los dengues y ninguna otra enfermedad tramitida por vectores
+
+#dengue2022 <- dengue2022 %>% filter(
+ # evento_nombre == "Dengue",
+ #provincia_nombre == "CABA")
+
+```
+
+```{r visualizar que tienen las mismas variables, eval = FALSE, echo=TRUE }
+#cree un mini data frame para ver que ambas tienen las mismas variables.
+
+#comparando_variables <- data.frame(names(dengue2020), names(dengue2022))
+#rm(comparando_variables)
+
+
+```
+
+# DENGUE 2020
+
+Exploro brevemente la base...
+Limpio la base para tener **solo dengue**, **solo CABA**, sin ninguna otra enfermedad por vectores ni otra localidad.
+  
+Por gusto **cambio el nombre de la variable** con el numero de casos a "casos2020"
+
+Hay 3 observaciones cuyo departamento_nombre y id no son indentificatorios (020 y 02)... me juego a elimiralas, seleccionando las observaciones que tengan departamanto_id (que es character) mayor a 020.
+Hay departamento_nombres que tienen un nombre incorrecto ("sin dato, en blanco, +++++ y 2007), pero que mirando el departamento_id se puede deducir cual es la comuna. 
+Asique muto creando una columna que se llame **"comuna"** que tome esos dos ultimos numeros del departamento_id que dice que numero de comuna es.
+
+Descubri que en los grupos etarios habia niveles repetidos por usar tilde (...neonatos dias y días; y los sin especificar. Asiqe arreglo tambien con mutarte creanddo columna de **grupo eterio**. 
+
+Selecciono las columnas que quiero seguir viendo: todas menos: departamento_id, departamento_nombre (ya que lo resumi en comuna) y provincia_nombre e _id, el año y evento_nombre y gurupo_edad_desc, porque ya se que me quede con CABA y dengue y 2020.
+
+Termino **eliminando la base anterior** para quedarme en el enviroment con una sola base limpia: dengue2020CABA
+
+```{r explorando y limpiando dengue2020, echo=TRUE}
+
+dim(dengue2020)
+summary(dengue2020)
+str(dengue2020)
+
+dengue2020CABA <- dengue2020 %>% filter(
+  evento_nombre == "Dengue" & provincia_nombre == "CABA") %>%  #filtro para que solo me aparezcan los dengues y ninguna otra enfermedad trasmitida por vectores
+  rename ("casos2020" = "cantidad_casos") %>% 
+  filter (departamento_id > "020") %>%  # elimino filas que no tinen el codigo correcto (3 de 1084)
+  mutate (comuna = substr(departamento_id, start = 4, stop = 5 )) %>% 
+mutate(grupo_etario = case_when (grupo_edad_id == "Neonato (hasta 28 dias)" ~ "Neonato (hasta 28 dias)",
+                    grupo_edad_id ==  "Posneonato (de 29 a 365 días)" ~ "Posneonato (de 29 a 365 dias)",
+                    grupo_edad_id ==  "Posneonato (de 29 a 365 dias)" ~ "Posneonato (de 29 a 365 dias)",
+                     grupo_edad_id == "De 13 a 24 meses" ~  "De 13 a 24 meses",
+                     grupo_edad_id ==  "De 2 a 4 anos" ~ "De 2 a 4 anos",
+                     grupo_edad_id == "De 5 a 9 anos" ~ "De 5 a 9 anos",
+                     grupo_edad_id == "De 10 a 14 anos" ~ "De 10 a 14 anos", 
+                     grupo_edad_id == "De 15 a 19 anos" ~ "De 15 a 19 anos",
+                     grupo_edad_id == "De 20 a 24 anos" ~ "De 20 a 24 anos",
+                     grupo_edad_id == "De 25 a 34 anos" ~ "De 25 a 34 anos",
+                     grupo_edad_id == "De 35 a 44 anos" ~ "De 35 a 44 anos",
+                     grupo_edad_id == "De 45 a 65 anos" ~ "De 45 a 65 anos",
+                     grupo_edad_id == "Mayores de 65 anos" ~ "Mayores de 65 anos",
+                     grupo_edad_id == "Edad Sin Esp." ~ "Sin Especificar",
+                    grupo_edad_id == "Sin Esppecificar" ~ "Sin Especificar")) %>% 
+  select(- c(departamento_nombre, departamento_id, provincia_id, provincia_nombre, año, evento_nombre, grupo_edad_desc, grupo_edad_id)) # saco las columnas que indican que era CABA y 2020, porque ya filtre, junto con las de departamento nombre e id que resumi en comuna
+
+rm(dengue2020) #descarto base que no utilizare mas, me quede con dengue2020CABA
+
+#puedo explorar mi base editada para chequiar como me quedo
+#dim(dengue2020CABA)
+#summary(dengue2020CABA)
+str(dengue2020CABA) #semanas_epidemio num, casos 2020 num, comuna chr, grupo etario chr
+
+
+```
+
+
+# GROUP BY COMUNAS: creando resumen de casos 2020
+
+Ahora voy a agrupar usando case with por comunas para generar una tabla resumen con la **cantidad de casos por comunas**. Y **arreglo** para que me lo muestre en orden descendente.
+Tuneo un poco la tablita.
+
+```{r agrupando los totales de casos por comunas, echo=TRUE, eval=TRUE }
+
+resumen_dengue2020CABA <- dengue2020CABA %>% 
+  group_by(comuna) %>%
+  summarise(total_casos = n()) %>%
+  arrange(desc(total_casos)) %>% 
+  ungroup()
+
+resumen_dengue2020CABA  %>%
+  kbl() %>%
+  kable_styling(bootstrap_options = c("striped", "respinsive"), full_width = F) %>% 
+  column_spec(1, bold = T, border_right = T, color = "white", background = "black") %>%
+  column_spec(2, bold = F, width = 7, background = heat.colors(15))
+
+#Aca presente el problema de que si no le pongo el arrange por orden descendente, el backround heat degradee no tiene sentido... Me gustaria que el color mas rojo este asociado al dato de mas casos y el mas clarito al mas bajo, y no a la tabla nomas
+
+```
+
+# GRAFICO 1 - GROPU BY semana epidemiologica 
+Quisiera visualizar como fue la confirmacion de casos a lo largo del año... en que epocca se diagnosticaron mas casos de covid y en cual menos. 
+Agrupo casos por semana epidemiologica y grafico barras.
+
+```{r agrupar por semana espidemiologica,  echo=TRUE, eval=TRUE }
+
+resumen_sepi_dengue2020CABA <- dengue2020CABA %>% 
+  group_by(semanas_epidemiologicas) %>%
+  summarise(total_casos = n()) %>%
+  arrange(semanas_epidemiologicas) %>% 
+  ungroup()
+
+grafico_semanas <- ggplot(resumen_sepi_dengue2020CABA) +
+  aes (x = semanas_epidemiologicas, y = total_casos) +
+  geom_col(fill = "cadetblue")+
+   #scale_x_discrete(breaks=seq(0, 52, 5))+  #no se por que no me aparecen los numeritos abajo, queria que apareceieran los 5, 10 ,15, 20, 25... para orientarse un poco
+   scale_y_continuous(breaks=seq(0, 100, 10))+
+  labs(title = "Casos Covid-19 en 2020", 
+     subtitle = "GRAFICO 1", 
+      caption = "Fuente: portal de datos abiertos de la Ciudad: http://datos.salud.gob.ar/dataset/ceaa8e87-297e-4348-84b8-5c643e172500/resource/3e11a05a-8287-4954-ab08-f698dc0ff3e1", 
+     x = "Semanas Epidemiologicas", 
+     y = "Casos confirmados",
+     fill = NULL) +
+theme_minimal()
+
+grafico_semanas
+
+
+# ggplotly(grafico_semanas, dynamicTicks = FALSE) %>% 
+#  rangeslider() %>% 
+#  config(modeBarButtonsToAdd = "toggleSpikelines") 
+#le appliqueel plotly pero no veo que le sume mucho al grafico asique mejor lo dejo sin
+```
+Se ve que la mayoria de lso casos estan en la primera mitad de año, con un pico en la semana 11 de 99 casos. Siendo una curva bastante simetrica en cuanto a su ascenso y descecno con la semana 13 como centro. En la segunda mitad de año, hay algunos casos en semanas isladas. 
+Se me ocurre que podria dar pie para investigar si fueron casos de gente que viajo, o pensar de donde pudo haberse contagiado. 
+
+# POBLACION POR COMUNAS PROYECCION
+
+Encontre esta base de una proyeccion de la poblacion por comunas y grupos etarios en CABA en el link https://www.estadisticaciudad.gob.ar/eyc/?p=79970
+
+Si bien es de julio2020, la voy a usar para ponderar los casos de dengue en cada comuna segun la poblacion. En la **hoja 7**, de 2020, hay tablas separando total, mujeres y varones. 
+Con **range** selecciono el rango de la tabla de totales que quiero tomar, donde me dice el numero de comuna y el total de poblacion de cada una.
+
+```{r llamando al excel de estimacion de poblacion de comunas CABA 2020, echo=TRUE, eval=TRUE}
+
+poblacion_comunas2020 <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/poblacion2020.xls", sheet = 7, range = "C3:Q4")
+
+# poblacion_comunas2020 <- read_excel(path = "https://wwwestadisticaciudad.gob.ar/eyc/wp-content/uploads/2018/03/PBP_CO1025.xls", sheet = 7, range = "C3:Q4")
+# igual que antes, tate de traer la base de datos por su link y no me funciona
+
+class(poblacion_comunas2020) #dataframe
+
+```
+
+Giro la tabla para que las comunas sean observaciones (filas) y los habitantes los valores
+Me deshago de la tabla invertida "poblacion_comunas".
+Me fijo que tipo de elemento es, es matrix, array... la hago datafrmae
+
+Hago mi dataframe con poblacion (mi matrix de una variable) y un vector que creo yo llamado comunas con los numeros de 01 a 15
+
+```{r traslocando filas por columnas, echo=TRUE, eval=TRUE}
+
+comunas_poblacion2020 <- t(poblacion_comunas2020)
+rm(poblacion_comunas2020)
+class(comunas_poblacion2020) #matrix - array
+
+poblacion <- comunas_poblacion2020
+rm(comunas_poblacion2020)
+
+
+comuna <- c(1:15) 
+comuna <- ifelse(comuna<10, paste0("0",comuna), comuna) # busque como agregarle el cero adelante a los numeros de un solo digito, asi son iguales a los del resumen y puedo unirlos despues con join df$semana<-ifelse(df$semana<10,paste0("0",df$semana),df$semana). Esta funcion transforma ademas el dato que era integer a character.
+
+class(comuna) # me lo hizo character
+comuna # chequeo que me imprime 01 02 03... y 10 11 12...
+
+comuna_poblacion <- data.frame (comuna, poblacion, row.names = NULL) # data.frame("Vectores", "row.names=","stringsAsFactors =")  si row.names = NULL no le agrega columnita a la izquierda con nombres (como yo tengo mis dos variables hechas, elijo eso) y StringsAsFactor = TRUE me convertiria en factores los strings de texto
+
+rm(poblacion)
+rm(comuna)
+  
+comuna_poblacion %>% 
+  kbl() %>%
+    kable_styling(bootstrap_options = c("striped", "respinsive"), full_width = F) %>% 
+    column_spec(1, bold = T, color = "white", background = "black", border_right = T) %>%
+    column_spec(2, bold = F,  width = 5, background = "white")
+
+```
+
+# GATHER me tira la tablita de una sin tanto rollo
+
+```{r gather de poblacion comunas, echo=TRUE, eval=FALSE}
+#puse eval false para que no me lea este chunk ya que me habia funcionado bien con el rodeo de antes, y no con esto.. no descubri por que.. algo del nombre que les puse
+
+poblacion_comunas2020_gathered <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/poblacion2020.xls", sheet = 7, range = "C3:Q4")
+
+poblacion_comunas2020_gathered <- gather(poblacion_comunas2020_gathered, comuna_g, poblacion_g)
+
+class(poblacion_comunas2020_gathered) #dataframe
+str(poblacion_comunas2020_gathered)
+class(poblacion_comunas2020_gathered$poblacion_g)
+class(poblacion_comunas2020_gathered$comuna_g)
+
+poblacion_comunas2020_gathered <- poblacion_comunas2020_gathered %>% 
+  mutate(comuna_gi = as.integer(as.character(comuna_g))) %>% 
+  select(-comuna_g) 
+poblacion_comunas2020_gathered
+
+class(poblacion_comunas2020_gathered$comuna_gi)
+as.numeric(as.integer(comuna_gi))
+
+poblacion_comunas2020_gathered <- ifelse(poblacion_comunas2020$comuna_gi <10, paste0("0",comuna_gi), comuna_gi)
+poblacion_comunas2020_gathered
+  
+#bueno, no estaria saliendo ponerle el ceriito adelante para poder unirla despues a la otra tabla          
+
+```
+
+
+# JOIN resumen y poblacion
+
+Quiero join la poblacion en cada comuna con la tabla resumen dengue 2020 para calcular la insidencia acumulada .
+
+Calculo la incidencia acumulada en cada comuna como total_casos sobre poblacion, y ordeno por orden creciente segun el numero total de casos, para despues plotear.
+
+```{r Join de resumen casos por comunas con poblacion de comunas 2020, echo=TRUE, eval=TRUE}
+
+join_resumen_comuna_poblacion <- left_join(resumen_dengue2020CABA, comuna_poblacion, "comuna")
+
+join_resumen_comuna_poblacion <- join_resumen_comuna_poblacion %>% 
+  mutate(total_casos_dividido_poblacion = total_casos / poblacion) %>% 
+  arrange(join_resumen_comuna_poblacion, total_casos)
+
+```
+
+# GRAFICO 2 - PLOT casos vs poblacion 
+
+Para ver si hay alguna relacion directa entre el numero de casos y la cantidad de poblacion de cada comuna, quiero hacer un plot, donde en un eje se represente la poblacion, en el otro los casos y cada puntito sea una comuna.
+
+```{r plot casos poblacion, echo=TRUE, eval=TRUE}
+
+dotplot <- ggplot (join_resumen_comuna_poblacion) +
+  geom_point(mapping = aes(x = total_casos, y = poblacion, shape = comuna)) +
+  scale_shape_manual(values = c(1:15))+
+  coord_flip() +
+  scale_y_continuous(breaks=seq(0, 280000, 10000)) +
+  scale_x_continuous(breaks=seq(0, 250, 25))+
+  guides(x = guide_axis(angle = 45))+
+  labs (title = "Casos DENGUE vs Poblacion Comunas 2020 ", subtitle = "GRAFICO 2", x = " Total de casos", y = "Habitantes", shape = "Comuna")+
+   theme_light()
+dotplot
+
+
+# habia probado el angulo de los datos del eje habitantes con theme pero no me habi funcionado:  #theme(axis.text.y = element_text(angle = 45, size = 10), axis.text.x = element_text(size = 10)). Google y probe cosas hasta que ese guides x guideaxis funciono
+
+tasa_casos_comunas <- ggplot(join_resumen_comuna_poblacion)+
+  geom_point(aes(x=comuna, y=total_casos/poblacion*1000))+
+  scale_y_continuous(breaks=seq(0, 1, 0.1)) +
+  labs (title = "Tasa de Casos Dengue por comuna 2020 ", subtitle = "GRAFICO 3a", x = " Comuna", y = "Tasa de casos")+
+   theme_light()
+tasa_casos_comunas
+
+casos_comunas <- ggplot(join_resumen_comuna_poblacion)+
+  geom_point(aes(x=comuna, y=total_casos))+
+  scale_y_continuous(breaks=seq(0, 200, 10)) +
+  labs (title = "Casos Dengue por comuna 2020 ", subtitle = "GRAFICO 3b", x = " Comuna", y = "Numero de casos")+
+   theme_light()
+casos_comunas
+
+```
+Viendo el plot... se podria ver una linea que tiende a esa relacion directa de mas casos en comunas de mayor poblacion, excepto en las comunas 13 y 14, y 9 y 10.
+En la 13 y 14, tienen bastante poblacion pero menos de 50 casos
+La comunas 9 y 10 tienen baja poblacion pero mas de 75 casos.
+
+Chusmeando un mapita en google con de las comunas... y perfilo que las comunas del sur (1, 7, 8, 4, 9, 10) tienen mas casos.
+
+
+Los dos ultimos graficos los analice poniendolos uno al lado del otro en un paint (pude haber hecho un tablero.. pero quizas era mucho rollo ya que se me ocurrio el dia antes de la entrega), y vi como en ciertas comunas, no corresponde un indice con respecto al otro... Tambien me parecio que seria interesante analizar en realidad. numero de casos/densidad poblacional en cada comuna, pero no encontre todavia la base de superficie de cada comuna (y espero ver mas en geo de eso para poder pensar en como hacerlo)
+
+![Graficos Tasa de casos y Casos Totales por comuna]("C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/graficos_tasa_vs_casos_dengue_por_comunas.jpg"){}
+
+# GRAFICO 3 BARRAS casos, comunas, edades.. 
+
+```{r barras: mybarplot y mybarplot2 facetado, echo=TRUE, eval=TRUE}
+
+#BAR 
+#ordeno
+dengue2020CABA$grupo_etario = factor(dengue2020CABA$grupo_etario, levels = c("Neonato (hasta 28 dias)", "Posneonato (de 29 a 365 días)", "De 13 a 24 meses", "De 2 a 4 anos", "De 5 a 9 anos", "De 10 a 14 anos", "De 15 a 19 anos", "De 20 a 24 anos", "De 25 a 34 anos", "De 35 a 44 anos", "De 45 a 65 anos", "Mayores de 65 anos", "Sin Especificar")) 
+
+mybarplot <- ggplot (dengue2020CABA) +
+  geom_bar(mapping = aes(x = comuna, weight = sum(casos2020), fill = grupo_etario)) +
+   theme_gray()
+
+mybarplot
+# no se marca mucho la diferencia..
+
+# FACETADO POR COMUNA 
+
+mybarplot2 <- ggplot (dengue2020CABA) +
+  geom_bar(mapping = aes(x = grupo_etario, weight = sum(casos2020), fill = grupo_etario))+
+  facet_wrap(~comuna, nrow = 3)+
+labs (title = "Casos por grupo etario en cada comuna", subtitle = "GRAFICO 3", x = NULL, y = "Cantidad de casos", fill = "Grupo etario")+
+  scale_y_continuous(breaks=seq(0, 280000, 20000))+
+  scale_x_discrete(labels = NULL)+
+      theme_classic()
+
+ggplotly(mybarplot2) %>% config(modeBarButtonsToAdd = "toggleSpikelines")
+
+```
+
+# GRAFICO 4 A ver un treemap - 
+
+```{r treemap edades casos}
+
+treemap_comunas <- ggplot(join_resumen_comuna_poblacion,
+       aes(area = total_casos ,
+           fill = total_casos,
+           label = comuna)) +
+  geom_treemap()+
+  geom_treemap_text(color = "white",
+                    place = "centre",
+                    size = 10)+
+  labs(title = "Treemap de casos por comunas", subtitle = "GRAFICO 4", fill = "Total Casos")+
+    scale_fill_viridis_c()
+
+treemap_comunas
+
+#me gusta la idea.. pero quisiera que el total de casos me aparezca una lista discreta con el numero de casos de cada comuna.
+# Esta paleta de colores tampoco me gusta, no se diferecnia bien
+```
+
+
+
+# COSAS PARA DESPUES
+
+## ARCHIVO GEOLOCALIZACION DE CABA Y SUS COMUNAS
+
+Buscaba un archivo con datos de las comunas y sus barrios pero me encontre con este que va a servir despues para geo.
+
+link: https://data.buenosaires.gob.ar/dataset/comunas
+
+```{r importando comunas_geo, eval=TRUE, echo=FALSE}
+
+comunas_geo <- read.csv("C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/comunas_geo.csv") 
+view(comunas_geo)
+
+summary(comunas_geo)
+head(comunas_geo)
+
+######   Sospecho que este archivo esta mal
+
+```
+
+## BARRIOS DE COMUNAS
+
+Como no encontre en internet, hice un excel yo con las comunas y los barrios que pertenecen a cada una de ellas
+
+```{r excel barrios comunas, eval = TRUE, echo = TRUE}
+
+barrios_comunas <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/barrios_comunas.xlsx")
+```

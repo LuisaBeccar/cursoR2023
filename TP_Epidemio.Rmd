@@ -1,0 +1,509 @@
+---
+title: "TP - Epidemio"
+author: "Luisa Beccar Varela"
+date: "2023-08-05"
+output: 
+ html_document: 
+   fig_height: 8
+   fig_width: 12
+   toc: yes
+   toc_float:
+     toc_collapsed: yes
+   number_sections: yes
+   theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, results = "hide", warning = FALSE)
+```
+
+# **Consigna actividad final**
+
+Entregar un archivo HTML o el código utilizado en un .Rmd + las bases utilizadas con el contenido abajo detallado.
+Con la base trabajada durante las clases o alguna base que ustedes quieran usar que contenga la información necesaria para cumplir la consigna y esté anonimizada:
+
+Realizar una descripción del evento de salud elegido utilizando variables de _tiempo, lugar y persona_. 
+Para ello:
+
+1  Redactar una *introducción* y un objetivo que contextualice el análisis. Establecer el período del análisis y su alcance territorial. No más de 3 parrafos.
+
+2  Realizar al menos un gráfico que muestre la *distribución temporal* de la variable de interés.
+
+3  Realizar al menos un gráfico o un mapa que muestre la *distribución territorial* de la variable de interés.
+
+4  Realizar al menos una tabla o un gráfico que compare la variable de interés *según sexo y grupos de edad*.
+
+5  Describir e interpretar los *resultados* presentados
+
+
+```{r librerias}
+library(readxl)
+library(tidyverse) 
+library(naniar)
+library(lubridate) #manipular fechas
+library(incidence2) # armar objetos de incidencia
+library(i2extras) # complemento deincidence2
+library(EpiCurve) # objetos incidencia intervalo hora
+library(sf) 
+library(tmap) 
+library(readr)
+library(writexl)
+library(gapminder)
+library(treemapify)
+library(kableExtra)
+library(viridis)
+library(plotly)
+options(scipen = 999)
+library(PHEindicatormethods) #tasa ajustada
+library(apyramid)
+
+```
+
+
+# 1 INTRODUCCION
+
+En el siguiente trabajo, analizare los datos de la epidemia de Dengue en el año 2020 en Ciudad de Buenos Aires, usando las bases abiertas que birnda la pagina [https://datos.gob.ar/dataset/salud-vigilancia-enfermedades-por-virus-dengue-zika]
+Tambien use la proyeccion de la poblacion por comunas en CABA 2020 y la proyeccion 2021 usada en clase.
+
+
+```{r Base dengue 2020}
+
+# Cargo base de datos dengue 2020
+dengue2020 <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/dengue2020.xlsx")
+
+# El remodelado que use en el TP1 
+dengue2020 <- dengue2020 %>% 
+  filter(evento_nombre == "Dengue" & provincia_nombre == "CABA") %>%  #filtro para que solo me aparezcan los dengues y ninguna otra enfermedad trasmitida por vectores
+  filter (departamento_id > "020") %>%  # elimino filas que no tinen el codigo correcto (3 de 1084)
+  mutate (comuna = substr(departamento_id, start = 4, stop = 5 )) %>% 
+  mutate(grupo_etario = case_when (
+                    grupo_edad_id == "Neonato (hasta 28 dias)" ~ "00-04",
+                    grupo_edad_id ==  "Posneonato (de 29 a 365 días)" ~ "00-04",
+                    grupo_edad_id ==  "Posneonato (de 29 a 365 dias)" ~ "00-04",
+                     grupo_edad_id == "De 13 a 24 meses" ~  "00-04",
+                     grupo_edad_id ==  "De 2 a 4 anos" ~ "00-04",
+                     grupo_edad_id == "De 5 a 9 anos" ~ "05-09",
+                     grupo_edad_id == "De 10 a 14 anos" ~ "10-14", 
+                     grupo_edad_id == "De 15 a 19 anos" ~ "15-19",
+                     grupo_edad_id == "De 20 a 24 anos" ~ "20-24",
+                     grupo_edad_id == "De 25 a 34 anos" ~ "25-34",
+                     grupo_edad_id == "De 35 a 44 anos" ~ "35-44",
+                     grupo_edad_id == "De 45 a 65 anos" ~ "45-64",
+                     grupo_edad_id == "Mayores de 65 anos" ~ "65 y +",
+                     grupo_edad_id == "Edad Sin Esp." ~ "Sin Especificar",
+                    grupo_edad_id == "Sin Esppecificar" ~ "Sin Especificar")) %>% 
+  filter(grupo_edad_id != "Sin Especificar") %>% #Filtro aquellos casos con el dato de edad
+  mutate(grupo_edad_id = as.factor(fct_relevel(grupo_edad_id,
+      "00-04","05-09", "10-14","15-19","20-24",
+      "25-34","35-44", "45-64","65 y +")))
+
+dengue2020$comuna <-as.numeric(dengue2020$comuna)
+dengue2020$semanas_epidemiologicas <- as.integer(dengue2020$semanas_epidemiologicas)
+
+str(dengue2020) 
+# borrar columnas: departamento_nombre, provincia_id, provincia_nombre, año, evento_nombre, comuna, grupo_edad_id
+dengue2020 <- dengue2020 %>% 
+  select(comuna, grupo_etario, semanas_epidemiologicas, cantidad_casos)
+
+
+```
+
+# 2 GRAFICO TEMPORAL
+
+En este caso mi base ya presentaba directamente la semana epidemiologica en la que se reporto el caso de dengue, asique no tuve que hacer el lavado de fecha, y no podre hacer un grafico con los dias. Por lo tanto planteare un grafico de semanas epidemiologicas para ver la distribucion de los casos en el año y luego mensual.
+
+```{r Casos en epiweeks y mensuales}
+
+class(dengue2020$semanas_epidemiologicas) # integer
+# busque como podia transformar el numero de semana epidemiologica a algun formato fecha para poder usar las funciones aprendidas en clase con incidence y plot y no hacer un grafico con ggplot como habia hecho en el TP1 y aqui lo encontrado:
+
+dengue2020$epiweek <- epiweek(year = 2020, week = dengue2020$semanas_epidemiologicas)
+class(dengue2020$epiweek) # grates_epiweek
+
+dengue2020$fechas <- as_date(dengue2020$epiweek, start_of = "week")
+class(dengue2020$fechas) # date
+
+# SEMANAS
+SEPI  <- incidence(dengue2020, 
+                 date_index = "fechas",
+                 interval = "epiweek") 
+
+plot(SEPI)+ 
+    labs(title = "Casos de Dengue en CABA 2020", 
+      x = "Semana epidemiologica",
+      y = "Casos",
+      fill="none")
+  
+
+
+# MENSUALES 
+MES  <- incidence(dengue2020, 
+                 date_index = "fechas", 
+                 interval = "month")
+               
+plot(MES)+ 
+  labs(title = "Casos de Dengue en CABA mensuales 2020", 
+      x = "Mes", 
+      y = "Casos",
+      fill="none")
+
+#facetado por comuna
+MEScomuna  <- incidence(dengue2020, 
+                 date_index = "fechas", 
+                 interval = "month",
+                 group= "comuna")
+
+plot(MEScomuna)+ 
+  labs(title = "Casos de Dengue en CABA mensuales segun comuna 2020", 
+      x = "Mes", 
+      y = "Casos",
+      fill="none")
+
+
+#facetado por grupo etario
+MEScomuna  <- incidence(dengue2020, 
+                 date_index = "fechas", 
+                 interval = "month",
+                 group= "grupo_etario")
+
+plot(MEScomuna)+ 
+  labs(title = "Casos de Dengue en CABA mensuales segun grupo etario 2020", 
+      x = "Mes", 
+      y = "Casos",
+      fill="none")
+
+```
+
+
+```{r Total de casos de dengue 2020}
+
+SEPI %>% 
+  cumulate() %>%  # función para sumas acumuladas
+  plot()+
+  labs(
+    title = "Casos acumulados de dengue en CABA 2020 (semanal)",
+    x = "Semana epidemiologica",
+    y = "Casos acumulados")  
+
+```
+
+# 3 DISTRIBUCION TERRITORIAL 
+
+Para mostrar la distribucion territorial de los casos de dengue en CABA, usare la base las comunas CABA y con base a lo hecho en el TP de Geo:
+
+
+```{r Dengue comunas info y casos}
+# cargo base de comunas
+comunas <- read_sf("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-educacion/comunas/comunas.geojson")
+
+head(comunas)
+class(comunas$COMUNAS) #numeric
+comunas <- comunas %>% 
+  mutate(COMUNA = as.integer((as.numeric(COMUNAS)))) %>% 
+  mutate(AREA_KM2 = AREA/1000000) %>% 
+  select(-c("COMUNAS", "ID", "OBJETO", "PERIMETRO", "AREA"))
+
+
+#Proyecciones 2020 x comunas (no edad ni sexo) 
+proy_CABA <- read_excel("C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/py_Poblacion_CABA.xlsx")
+# tiene agrupado por total, 0-60 y +60
+proy_CABA <- proy_CABA %>% 
+  pivot_wider(names_from = grupoedad60, values_from = Poblacion) # asi tengo coumna comuna, poblacion total pob 0-59 y poblacion +60. Pero como en dengue no me va a importar en particular esa division de mas o menos 60 años, voy a seleccionar que solo me diga comuna y pob total
+proy_CABA <- proy_CABA %>% 
+  select(c(Comuna, Total)) %>% 
+  rename(PobTotal = Total) # renombro asi se entiende total de que: poblacion
+
+#le sumo la poblacion total a mi base de comunas
+comunas_proy <- left_join(comunas, proy_CABA, by=c("COMUNA"="Comuna"))
+rm(proy_CABA)
+
+#agrupo los datos de dengue por comunas 
+dengue2020_comunas <-   dengue2020 %>% 
+  group_by(comuna) %>% 
+  summarise(cantidad_casos = sum(cantidad_casos))
+
+#junto los datos de dengue con los datos de las comunas
+dengue2020_comunas_casos <- left_join(dengue2020_comunas, comunas_proy, by=c("comuna"="COMUNA"))
+
+rm(comunas_proy, dengue2020_comunas, comunas)
+
+#calculo una incidencia por comunas cada 1000 hab
+dengue2020_comunas_casos$incidencia1000 <- round (dengue2020_comunas_casos$cantidad_casos/dengue2020_comunas_casos$PobTotal*1000, 2) #casos cada 1000 habitantes 
+
+```
+
+
+```{r Coropleticos comunas casos: netos e incidencia}
+
+class(dengue2020_comunas_casos) #"tbl_df" "tbl" "data.frame"
+
+dengue2020_comunas_casosSF <- st_sf(dengue2020_comunas_casos, sf_column_name = "geometry", crs = 4326 )
+class(dengue2020_comunas_casosSF) #DF
+
+
+
+tm_shape(dengue2020_comunas_casosSF) +
+   tmap_options(check.and.fix = TRUE)+ # codigo sugerido en consola "Error: Shape contains invalid polygons. Please fix it or set tmap_options(check.and.fix = TRUE) and rerun the plot", sino no me ploteaba
+  tm_polygons(c("cantidad_casos", "incidencia1000"),
+              style="quantile",  # probando opciones "cat", "fixed", "sd", "equal", "pretty", "quantile", "kmeans", "hclust", "bclust", "fisher", "jenks", "dpih", "headtails", and "log10_pretty". Me quedo con cat que ace cada numero categorico y se veria en orden de menor a mayor usando un color para cada categoria.
+              title=c("Cantidad de casos neto", "Incidencia 2020 cada 1000 habitantes"),
+               palette = "-viridis")+
+  tm_compass(type="arrow", position = c("right", "top"), size = 0.8)+
+  tm_scale_bar(position=c("left", "bottom"))+
+  tm_text("comuna") +
+  tm_layout(main.title="Casos netos vs Incidencia cada 1000 habitantes", legend.title.size = 2, legend.text.size = 0.5, legend.position = c("RIGHT","BOTTOM"))
+ # sospecho hay algo mal con este grafico porque si no pongo el "BOTTOM" no me grafica. ademas me sale un cartel con "Warning message: The shape dengue2020_comunas_casosSF is invalid. See sf::st_is_valid "
+  
+
+# cambiando el estilo para coloresar por categorico "cat", se ve la diferencia en algunas comunas 
+
+tm_shape(dengue2020_comunas_casosSF) +
+   tmap_options(check.and.fix = TRUE)+ # codigo sugerido en consola "Error: Shape contains invalid polygons. Please fix it or set tmap_options(check.and.fix = TRUE) and rerun the plot", sino no me ploteaba
+  tm_polygons(c("cantidad_casos", "incidencia1000"),
+              style="cat",
+              title=c("Cantidad de casos neto", "Incidencia 2020 cada 1000 habitantes"),
+               palette = "-viridis")+
+  tm_compass(type="arrow", position = c("right", "top"))+
+  tm_scale_bar(position=c("left", "bottom"))+
+  tm_text("comuna") +
+  tm_layout(main.title="Casos netos vs Incidencia cada 1000 habitantes", legend.show = FALSE)
+
+```
+
+
+# 4 SEXO Y GRUPOS ETARIOS 
+
+Volviendo a ver los datos en el dataframe de dengue 2020 con los grupos de edad, pero no tengo por sexo. 
+
+Agarro las proyecciones de poblacion en las comunas de CABA para 2020 de la base del link [https://www.estadisticaciudad.gob.ar/eyc/?p=28146]: y obtengo la poblacion masculina y femenina de cada comuna. Pero NO esta separada por edad...
+
+```{r}
+
+# quise usar el facet plot para graficar cada comuna en un cuadradito con barras apiladas con las edades que contribuyeron en cada unidad de tiempo, peeeero, ya no funciona
+
+# incidencia_comunas <- incidence(dengue2020,    # base de datos
+#   date_index = "fechas",                       # columna con las fechas
+#   interval = "epiweek",                        # intervalo
+#   groups = c("comuna", "grupo_etario"))        # grupo
+# 
+# 
+# incidence2::facet_plot(
+#   incidencia_comunas,     
+#   facets = comuna,                # faceta
+#   fill = grupo_etario,            # variable barras apiladas
+#   title = "Casos Dengue en CABA según comuna y grupo de edad (semanal)",   # titulo
+#   xlab = "Semana epidemiologica", # etiqueta eje x
+#   ylab = "Casos"                  # etiqueta eje y
+#   )
+
+# #Error: 'plot' is not an exported object from 'namespace:incidence2'
+
+
+# Proyeccciones comunas 2020 varones y mujeres totales, SIN EDADES
+#intente limpiar mi y crear un abase de datos con poblacion 2020 por comunas y grupos etarios, y varones y mujeres, pero despues me di cuenta de que en mis datos de casos de dengue nunca distingue por sexo... 
+
+
+varones_comunas2020 <- read_xlsx(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/pob2020.xlsx", range = "A22:Q38")
+varones_comunas2020 <- select(varones_comunas2020, c(1, 12))
+colnames(varones_comunas2020) <- c("Comuna", "varones")
+
+mujeres_comunas2020 <- read_excel(path = "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/pob2020.xlsx", range = "A42:Q58")
+mujeres_comunas2020 <- select(mujeres_comunas2020, c(1, 12))
+colnames(mujeres_comunas2020) <- c("Comuna", "mujeres")
+
+v_m_comunas2020 <- left_join(varones_comunas2020, mujeres_comunas2020, by = "Comuna")
+str(v_m_comunas2020)
+v_m_comunas2020 <- mutate(v_m_comunas2020, total = varones + mujeres)
+rm(varones_comunas2020, mujeres_comunas2020)
+
+#quedo algo, lo guardo por si sirve
+write.csv(v_m_comunas2020, "C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/v_m_comunas2020.csv")
+                   
+                      
+```
+
+Piramide con poblacion CABA Masculino y Femenino: use la base de 2021 que usamos en clase, arme los grupos etarios como los que yo venia usando antes (con menos cortes que lo usado en clase), y esteriotipadamente lo coloree rosa y celeste
+
+```{r Piramide de poblacion CABA 2021 edades y sexo}
+
+proy_jur5 <- read_excel("C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/Py_prov_5.xlsx") 
+
+proyCABA <-proy_jur5 %>% 
+  filter(Jurisdiccion== "CABA") %>% 
+  select(-Jurisdiccion) %>% 
+  mutate (Grupo_edad = case_when (
+                   Grupo_edad == "00-04" ~ "00-04",
+                    Grupo_edad =="05-09" ~ "05-09",
+                     Grupo_edad =="10-14" ~ "10-14",
+                     Grupo_edad == "15-19" ~ "15-19",
+                     Grupo_edad =="20-24" ~ "20-24",
+                     Grupo_edad == "25-29" ~  "25-34",
+                     Grupo_edad == "30-34" ~  "25-34",
+                     Grupo_edad =="35-39" ~ "35-44",
+                     Grupo_edad == "40-44" ~ "35-44",
+                     Grupo_edad =="45-49" ~ "45-64",
+                     Grupo_edad == "50-54" ~ "45-64",
+                     Grupo_edad == "55-59" ~ "45-64",
+                     Grupo_edad ==   "60-64" ~ "45-64",
+                     Grupo_edad == "65-69" ~"65 y +",  
+                     Grupo_edad == "70-74" ~ "65 y +",
+                     Grupo_edad == "75-79" ~ "65 y +",    
+                     Grupo_edad == "80-84" ~ "65 y +",
+                     Grupo_edad =="85-89" ~ "65 y +",  
+                     Grupo_edad =="90-94" ~"65 y +",
+                     Grupo_edad == "95-99" ~"65 y +",                     
+                     Grupo_edad == "100 y más" ~"65 y +")) %>% 
+  mutate(Grupo_edad = as.factor(Grupo_edad)) %>% 
+  group_by(Grupo_edad) %>% 
+  summarise(M = sum(M), F=sum(F)) %>% 
+  pivot_longer(col= c(M,F),
+               names_to = "sexo", # esta columna llamada "sexo" tendra valor F o M
+               values_to = "habitantes" ) # esta  columna llamada "habitantes" tendra el valor de la celda
+rm(proy_jur5)
+
+
+apyramid::age_pyramid(data = proyCABA,
+                      age_group = "Grupo_edad",
+                      split_by = "sexo",   # nombre de la columna sexo
+                      count = "habitantes", # columna con las cantidades agrupadas
+                      proportional = TRUE,
+                      show_midpoint = FALSE,
+                      pal = c("pink", "lightblue"))   +   
+  labs(
+       y = "% habitantes",        
+       x = "Grupos de Edad",                          
+       fill = "Sexo", 
+       title = "Piramide población CABA",
+       subtitle = "proyeccion 2021 (fingiremos que es de 2020)")
+ 
+# no me gusta como estan los numeros de proporcion... y no encuentro como cambiarlos
+
+```
+
+
+```{r Aporte de casos por grupo etario o comuna por semana}
+
+# quise usar incidence, pero me tope con el problema de los colores, trate usando una paleta que enconte en internet, pero no me salio: 
+
+# install.packages("Polychrome")
+# library(Polychrome)
+# Glasbey = glasbey.colors(32)
+# 
+# epi_comuna <- incidence(
+#   dengue2020,              
+#   date_index = "fechas", 
+#   interval = "epiweek",   
+#   groups = "comuna")
+# 
+# plot(dengue2020, aes(x = fechas, y = cantidad_casos, fill = comuna)+
+#          geom_bar()+
+#   labs(
+#   title = "Casos Dengue en CABA según comuna (semanal)",  
+#   x = "Semana epidemiologica ", 
+#   y = "Casos")+               
+#    scale_fill_manual(Glasbey))
+
+
+# Al final temrine creando mis curvas epidemiologicas por comunas y grupos etarios con con ggplot:
+
+dengue2020 <- dengue2020 %>% 
+  mutate(comuna = as.factor(comuna)) %>% 
+  mutate(grupo_etario =  as.factor(grupo_etario))
+
+class(dengue2020$comuna)
+class(dengue2020$grupo_etario)
+
+# por comunas
+ggplot(data = dengue2020) +
+  geom_bar(mapping = aes(x = epiweek,
+                         weight = cantidad_casos ,
+                         fill = comuna),
+                         color = "white")+
+  labs(  
+  title = "Casos Dengue en CABA 2020",  
+  subtitle = "aporte de casos por comuna (semanal)",
+  leyend.title = "Comuna",
+  x = "Semana epidemiologica ", 
+  y = "Casos")+ 
+  theme_minimal()
+
+# por grupo etario
+ggplot(data = dengue2020) +
+  geom_bar(mapping = aes(x = epiweek,
+                         weight = cantidad_casos ,
+                         fill = grupo_etario),
+                         color = "white")+
+  labs(  
+  title = "Casos Dengue en CABA 2020",
+  subtitle = "aporte de casos grupo etario (semanal)",  
+  x = "Semana epidemiologica ", 
+  y = "Casos")+               
+  theme_minimal()
+
+```
+
+
+```{r Casos por grupo etario en cada comuna}
+
+# tabla con casos por edad en cada comuna
+dengue.edadesWIDER.comunas <- dengue2020 %>% 
+  group_by(grupo_etario, comuna) %>% 
+  summarise(cantidad_casos = sum(cantidad_casos)) %>% 
+  pivot_wider(names_from = grupo_etario, values_from = cantidad_casos)
+
+dengue.edadesWIDER.comunas[is.na(dengue.edadesWIDER.comunas)] <- 0
+
+#para joinearlas tuve que deshacer que "comuna" fuera factor, asique lo trasforme a integer en ambos df
+dengue2020_comunas_casos <- mutate(dengue2020_comunas_casos, comuna = as.integer(comuna))
+dengue.edadesWIDER.comunas <- mutate(dengue.edadesWIDER.comunas, comuna = as.integer(comuna))
+
+dengue.edadesWIDER.comunas <- left_join(dengue.edadesWIDER.comunas, dengue2020_comunas_casos)
+
+dengue.edadesWIDER.comunas <- dengue.edadesWIDER.comunas %>% 
+  select(c(1:11, PobTotal, incidencia1000)) %>% 
+  rename(COMUNA = comuna, Casos = cantidad_casos) 
+
+#ordenado por total de casos
+tb_TotalCasos <- arrange(dengue.edadesWIDER.comunas, desc(Casos))
+
+kbl(tb_TotalCasos, caption = "Casos de Dengue por comuna y grupos etarios CABA 2020m ordenados segun cantidad de casos decreciente") %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
+    column_spec(1, bold = TRUE, border_right = TRUE, background = "lightgray") %>% 
+    column_spec(11, bold = FALSE, background = "lightgray") %>% 
+    row_spec(0, bold = TRUE, align = "c", font_size = 10,  background = "lightgray") %>% 
+    row_spec(13:14, background = "lightyellow")
+
+
+#ordenado por incidencia
+tb_Incidencia1000 <- arrange(dengue.edadesWIDER.comunas, desc(incidencia1000))
+
+kbl(tb_Incidencia1000, caption = "Casos de Dengue por comuna y grupos etarios CABA 2020, ordenados segun incidencia decreciente") %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
+    column_spec(1, bold = TRUE, border_right = TRUE, background = "lightgray") %>% 
+    column_spec(13, bold = FALSE, background = "lightgray") %>% 
+    row_spec(0, bold = TRUE, align = "c", font_size = 10,  background = "lightgray") %>% 
+    row_spec(13:14, background = "lightyellow")
+
+
+#otra forma de ver los datos: la longer
+# dengue.edadesFACTOR.comunas <- dengue2020 %>% 
+#   group_by(grupo_etario, comuna) %>% 
+#   summarise(cantidad_casos = sum(cantidad_casos)) %>% 
+#   mutate(grupo_etario = as.factor(grupo_etario))
+
+```
+
+# 5 RESULTADOS
+
+- El pico de casos entre semanas epidemiologicas 8° y 18° (mediana 13°).
+- El pico de casos se dio en marzo.
+- Las comunas 1, 4, 7 parecen ser las que mas casos de dengue registraron. 
+- Todas las comunas tuvieron un pico hacia marzo 2020, pero solo las comunas 1 y 2 tuvieron casos hacia septiembre-octubre del 2020.
+- Los grupos de 25.34, 35-44 y 45-54 fueron los que mas casos registraron.
+- En la pirámide poblacional de CABA 2021 (pretendiendo que fuera la del 2020), se ve que la población de CABA es predominantemente de mas de 25 años. Por eso no sorprende que  los mayores de 25 años hayan sido los que mas contribuyeron en los casos de dengue. Asi podemos descartar, como bien sabemos, que esta enfermedad transmitida por vectores, no tiene predisposición por ningún grupo etario, y que hayamos tenido una mayor cantidad de casos en los mayores de 25 años es por la característica de la población analizada.
+- La acumulacion de casos se dio principalemente hasta la semana 26°-27°, con los escalones mas grandes alrededor de la semana 13°, y luego se mantuvo estable, sin superar los 1050 casos.
+- Según el criterio de colorear por “quartiles”, no se ve ninguna diferencia en el orden entre las comunas respecto a los casos netos y la incidencia ajustada por habitantes, cada 1000 habitantes.
+- Cambiando el estilo para colorear por categorico "cat", en la que se le da un color ordenado según el valor de casos netos e incidencia ajustada a cada comuna, si se ve una, mínima, diferencia: las comunas 13 y 6. Pequeño detalle nomas, que represento en las tablas mas adelante. 
+

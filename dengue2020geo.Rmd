@@ -1,0 +1,654 @@
+---
+title: "Dengue 2020 GEO"
+author: "Luisa Beccar Varela"
+date: "2023-18-4"
+output:
+ html_document:
+    fig_height: 8
+    fig_width: 12
+       #code_folding: "hide"
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 6
+    number_sections: true
+    theme: paper
+editor_options: 
+  chunk_output_type: console
+---
+```{r librerias y seteos, echo=TRUE, eval=TRUE, warning=FALSE, results='hide'}
+
+library(tidyverse)
+library(readxl)
+library(readr)
+library(ggmap)
+library(writexl)
+library(gapminder)
+library(lubridate) #Para modificar las fechas
+library(treemapify)
+library(kableExtra) 
+library(viridis)
+library(plotly)
+options(scipen = 999)
+library(sf) 
+library(tidyverse)
+library(units) 
+library(tmaptools) # para interactuar con openStreetMap
+library(osmdata) # libreria para obtener data de OSM
+library(leaflet) #para hacer mapas interactivos
+library(tmap)
+library(osrm)
+library(archive)
+
+```
+# TP GEO
+
+En este trabajo voy a usar bases de datos de mi trabajo previo sobre Dengue 2020, que fueron hechas a partir de la base de Dengue 2020 del dataset de la Ciudad de Buenos Aires. Ademas tomare mapas de los espacios verdes y de las comunas de CABA.
+
+Casos: resumen_dengue2020CABA.csv 
+
+Radios: 
+https://data.buenosaires.gob.ar/dataset/informacion-censal-por-radio
+https://cdn.buenosaires.gob.ar/datosabiertos/datasets/direccion-general-de-estadisticas-y-censos/informacion-censal-por-radio/caba_radios_censales.geojson
+
+Comunas:
+https://data.buenosaires.gob.ar/dataset/comunas
+https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-educacion/comunas/comunas.geojson
+
+Espacios Verdes:
+https://data.buenosaires.gob.ar/dataset/espacios-verdes  https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/espacios-verdes/espacio_verde_publico.geojson
+
+Con estos datos intentare:
+
+1)Visualizar las comunas, espacios verdes, casos por comunas, hogares con NBI en distintos mapas para pensar si pudiera haber alguna relacion entre ellos.
+
+2)Ubicar los hospitales publicos de CABA y ver a cual le convendira ir a una persona de alguna de los radios censales con mas de 200 hogares con NBI por cercania (Creando un Voronoid de los hospitales en CABA y despues calcular la distancia de un centroide de radio censal a un hospital.
+
+
+#BASES DE DATOS
+
+```{r Base de datos , echo = TRUE, eval = TRUE}
+
+casos <- read.csv("C:/Users/luisa/OneDrive/Escritorio/Int Ciencia de Datos Salud/resumen_dengue2020CABA.csv", sep = ",")
+
+comunas <- read_sf("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-educacion/comunas/comunas.geojson")
+
+verdes <- read_sf("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/espacios-verdes/espacio_verde_publico.geojson")
+
+radios <- read_sf("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/direccion-general-de-estadisticas-y-censos/informacion-censal-por-radio/caba_radios_censales.geojson")
+
+```
+#ORGANIZANDO DATOS
+
+## COMUNAS Y CASOS
+
+```{r Limpiando bases comunas y casos, echo=TRUE, eval=TRUE, warning=FALSE }
+
+head(comunas)
+class(comunas$COMUNAS) #numeric
+comunas <- comunas %>% 
+  mutate(COMUNA = as.integer((as.numeric(COMUNAS)))) %>% 
+  mutate(AREA_KM2 = AREA/1000000) %>% 
+  select(-c("COMUNAS", "ID", "OBJETO", "AREA"))
+
+
+head(casos)
+casos <- rename(casos, COMUNA = comuna)
+
+comunas_casos <- left_join(comunas, casos, by = "COMUNA") # le agrego el numero de casos al sf de las comunas 
+rm(casos) # ya no voy a usar este df 
+
+#le creo el centroide a cada comuna:
+comunas_casos$CENTROIDE <- st_point_on_surface(comunas_casos$geometry)
+
+#hago un sf de multilinestring de las comunas, asi puedo marcar los bordecitos mas fuerte y ponerles nombre por su centroide despues en los graficos
+class(comunas_casos)
+comunas_string <- st_cast(comunas_casos,"MULTILINESTRING")
+class(comunas_string) #sf
+
+```
+## VERDES
+
+```{r limpio base verdes, echo=TRUE, eval=TRUE, warning=FALSE}
+
+head(verdes)
+unique(verdes$clasificac) # veo que tipos de verdes hay
+
+verdes <- verdes %>%   # no voy a considerar los canteros
+  filter (clasificac != c("CANTERO CENTRAL")) %>% 
+  mutate (areaV_km2 = area/1000000) %>% 
+  select (c("COMUNA", "geometry", "areaV_km2"))
+   # chequeo que se redujeron las observciones 
+
+# creo un df con las areas en km2 de espacios verdes por comunas, para tener el dato ordenado y agregarlo a comunas_casos(sf)
+verdes_por_comunas <- verdes %>% 
+  st_drop_geometry() %>% 
+  group_by(COMUNA) %>% 
+  summarise(areaV_km2 = sum(areaV_km2)) %>% 
+  ungroup()
+class(verdes_por_comunas)
+
+# le meto el dato de km2de verdes por comuna a la tabla de comunas casos:
+comunas_casos <- merge(comunas_casos, verdes_por_comunas)
+# usando merge, busca solo la columna en comun, intente ponendo como tercer termino el by=COMUNA y salia error
+```
+
+
+## RADIOS
+
+```{r limpiando radios para nbi, echo=TRUE, eval=TRUE, warning=FALSE }
+
+head(radios)
+#"character", los paso a integer para poder sumar
+radios$TOTAL_POB <- as.integer(as.character(radios$TOTAL_POB))
+radios$H_CON_NBI <- as.integer(as.character(radios$H_CON_NBI))
+radios$T_HOGAR <- as.integer(as.character(radios$T_HOGAR))
+
+# centroide de los radios censales
+radios$CENTROIDE_radios <- st_point_on_surface(radios$geometry)
+
+# busco los radios censales con mas de 200 hogares con NBI
+rs_doscientos_nbi <- filter(radios, H_CON_NBI> 200 )
+
+#para todos los radios, me ordeno un poquito mas los datos
+radios <-  select(radios, c(COMUNA, ID, TOTAL_POB, T_HOGAR, H_CON_NBI, geometry, CENTROIDE_radios))
+
+# cuantos nbi hay en cada comuna. Despues los unire comunas casos.
+nbi_comunas <- radios %>% 
+  group_by(COMUNA) %>% 
+  summarise(poblacion = sum(TOTAL_POB), total_hogares = sum(T_HOGAR), hogares_c_nbi = sum(H_CON_NBI)) %>% 
+  ungroup()
+
+#porcentaje de hogares nbi del total de hogares tot100 
+nbi_comunas$PctHcNBI <- round(nbi_comunas$hogares_c_nbi*100/nbi_comunas$total_hogares)
+
+
+
+```
+
+```{r unir nbi_comunas con comunas_casos, echo=TRUE, eval=TRUE, warning=FALSE}
+
+# juntar comunas_casos con nbi_comunas.. son dos sf, con distinta geometria, asique voy a hacerlos df, left join y reconvertirlos a sf
+
+comunas_casos <- as.data.frame(comunas_casos)
+comunas_casos$COMUNA <- as.character(as.integer(comunas_casos$COMUNA))
+
+nbi_comunas <- as.data.frame((nbi_comunas))
+
+comunas_casos <- left_join(comunas_casos, nbi_comunas, by = "COMUNA") # df
+rm(nbi_comunas)
+
+head(comunas_casos)
+
+#la trasformo a sf
+comunas_casos <- st_sf(comunas_casos, sf_column_name = "geometry") #sf
+class(comunas_casos)
+
+```
+
+
+# GEO.GRAFICOS
+
+## Comunas CABA
+```{r Comunas CABA, echo=TRUE, eval=TRUE, warning=FALSE}
+ggplot() +
+  geom_sf(data=comunas_casos, 
+          aes(fill=COMUNA, colour=NULL)) + 
+          guides(fill=FALSE, colour=FALSE)+
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL), colour="black", size=9, alpha=0)+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="black", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title="Comunas Ciudad de Buenos Aires")+
+  theme_void()
+
+```
+
+
+## Grafico nbi en los radios sensales y comunas, con espacios verdes
+```{r Mas definicion: ver radios cesales, echo=TRUE, eval=TRUE, warning=FALSE}
+
+ggplot()+
+  geom_sf(data= radios, aes(fill=H_CON_NBI, colour= NULL, size=0)) +
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL, colour="white", size=9, alpha=0))+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="white", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title= "Hogares con NBI en radios censales en CABA", fill= "Hogares con NBI")+
+  theme_void()+
+  scale_fill_viridis_c()
+
+ggplot()+
+  geom_sf(data= radios, aes(fill=H_CON_NBI, colour= NULL, size=0)) +
+  geom_sf(data=verdes, fill="green", color = NA)+
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL, colour="white", size=9, alpha=0))+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="white", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title= "Hogares con NBI en radios censales en CABA + Areas verdes", fill= "Hogares con NBI")+
+  theme_void()+
+  scale_fill_viridis_c()
+
+# total Nbi por comunas y ubicacion de areas verdes 
+ggplot()+
+  geom_sf(data=comunas_casos, aes(fill=hogares_c_nbi, colour= NULL))+
+  geom_sf(data=verdes, fill="green", color = NA)+
+  geom_sf(data= comunas_string, 
+        aes(fill=NULL), colour="white", size=9, alpha=0)+
+        guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+        aes(label = COMUNA), colour="white", size=5)+
+        guides(colour=FALSE, size=FALSE)+
+  labs(title = "Total de hogares con NBI por comunas + Areas verdes", fill = "Horagares con NBI")+
+  theme_void()+
+  scale_fill_viridis_c()
+
+
+#veo que depende como ponga los parentesis alredeor de label sale distinto
+
+
+```
+
+
+## Graficos casos dengue
+```{r grficar las bases geojson, eval=TRUE, echo=TRUE, warning=FALSE}
+
+# Casos dengue por comuna y porcentaje de nbi en cada comuna
+ggplot()+
+  geom_sf(data= comunas_casos, aes(fill=total_casos), size=0) +
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL, colour="red", size=9, alpha=0))+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+      aes(label = paste0(PctHcNBI, "%*")), 
+              colour="blue", size=5)+ 
+          guides(colour="none", size="none")+
+  labs(title= "Casos dengue y hogares con NBI en CABA", fill= "Total de casos dengue", caption = "* Porcentaje de hogares con NBI")+
+  theme_void()+
+  theme(plot.caption = element_text(color = "blue", face = "bold"))+  # esto abajo de theme void, sino no se ve azul
+  scico::scale_fill_scico(palette = "lajolla")
+
+# Casos de dengue en cada comuna, y las radios censales con mas de 200 hogares NBI
+ggplot() +
+  geom_sf(data=comunas_casos, aes(fill=total_casos))+ 
+  geom_sf(data=rs_doscientos_nbi, fill="red", color = NA)+
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL), colour="black", size=9, alpha=0)+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="black", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title = "Casos de Dengue por comunas 2020", subtitle = "y radios censales con mas de 200 hogares NBI", fill = "Total de asos de Dengue")+
+  theme_void()+
+  #scale_fill_viridis_c()
+  scico::scale_fill_scico(palette = "lajolla") 
+
+
+# Casos de dengue en cada comuna, y las areas verdes de cada comuna 
+ggplot() +
+  geom_sf(data=comunas_casos, aes(fill=total_casos))+ 
+  geom_sf(data=verdes, fill="green", color = NA)+
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL), colour="black", size=9, alpha=0)+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="black", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title = "Casos de Dengue por comunas 2020", subtitle = "y localizacion de areas verdes", fill = "Casos de Dengue 2020")+
+  theme_void()+
+  theme(plot.subtitle = element_text(color = "green", face = "bold"))+
+  #scale_fill_viridis_c()
+  scico::scale_fill_scico(palette = "lajolla") #no me gustaba la escala viridis, asique busque otra, tuve que instalar el pakete scico.
+
+
+```
+
+## Mirando estos graficos que puedo concluir? 
+
+- La comuna 1 tiene mucho espacio verde y es la que más casos de Dengue tuvo. Tiene el porcentaje de hogares con NBI msas alto.
+- Otras comunas como la 12, 13, 14 tienen mucho espacio verde pero minimos casos de Dengue y hogares con NBI 
+- La comuna 8 tiene bastante area verde y hogares con NBI, y un total de casos de dengue 
+En cambio la comuna 8 tiene bastante espacio verde y radios censales con mas de 200 hogares con NBI, y una cantidad alta de casos Dengue.
+- La comuna 7, sorprende por no tener el porcentaje de NBI mas alto, ni demasiado espacios verdes, aun asi es la segunda comuna con mas casos de Dengue.
+
+
+# Cambiando el enfoque para usar otras funciones
+
+Suponiendo que una José, que vive en el radio censal de la comuna 8 que tiene mas de 200 hogares con NBI se contagia dengue y esta teniendo un cuadro grave... ¿a que hospital publico le conviene ir? 
+Es decir ¿cual es el hosptal mas cercano al centroide del radio censal grande de la comuna 8?
+Aunque a simple vista, se nota que el Hospital Griesen está al lado de ese radio, finjo demencia y voy a buscar y ubicar los hospitales publicos de CABA [https://data.buenosaires.gob.ar/dataset/hospitales], y crear un voronoid de sus areas. Con eso simple respondo la pregunta de qué hospital le queda mas cerca a Jose, y tambien a cualquier otra persona de cualquier otro sitio de la ciudad que requiera ir a su hospital mas cercano.
+
+
+## Hospitales de agudos CABA
+```{r hospitales, eval=TRUE, echo=TRUE, warning=FALSE}
+hospitalesCABA <- st_read ("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-salud/hospitales/hospitales.geojson")
+
+head(hospitalesCABA)
+sum(is.na(hospitalesCABA$CALLE))  # 0
+sum(is.na(hospitalesCABA$ALTURA)) #0
+# bien, no me falta ningun dato de nombre de calle ni altura, voy a poder armar mi direccion
+
+unique(hospitalesCABA$TIPO_ESPEC)
+hospitalesCABA$TIPO_ESPEC
+
+# tomo solo los hospitales que me sirvan para tratar dengue en adulto
+TiposEspecificos <- c("ZOONOSIS", "GRAL: BAS/CRIT/OTR", "INFECTOLOGIA", NA, "NEUMONOLOGIA" )  # Grieson es NA
+
+TiposEspecificosNO <- c("PEDIATRIA", "ENF. APAR. DIGESTIVO", "SALUD MENTAL", "OFTALMOLOGIA", "ODONTOLOGIA", "MED. FISICA/REHABILITACION", "NEUMONOLOGIA", "ONCOLOGIA", "MATERNO-INFANTIL", "QUEMADOS")
+ 
+hospitalesAgudosCABA <- hospitalesCABA %>% 
+  filter(!TIPO_ESPEC %in% TiposEspecificosNO) %>%   #filtre asi asi me aparecen con el grieson que es NA y no pude colcoarle el GRAL: BAS/CRIT/OTR en tipo_espec
+  mutate (DIRECCION_GEO = paste0(CALLE, " ", ALTURA, ", Ciudad de Buenos Aires, ", "Argentina" )) %>% #armo la direccion como para poder usar en geolocaizacion (aunque este sf ya tiene la localizacion del hospital en POINT)
+  select(c("NOM_MAP", "DIRECCION_GEO", "TIPO_ESPEC", "geometry")) 
+
+
+#hospitales y radios censales con mas de 200 hogares en CABA
+ggplot()+
+  geom_sf(data=comunas_casos)+
+  geom_sf(data=radios, aes(fill=NULL), colour="gray")+
+  geom_sf(data= rs_doscientos_nbi, fill="red")+ 
+  geom_sf(data= comunas_string, 
+          aes(fill=NULL), colour="black", size=9, alpha=0.5)+
+          guides(colour=FALSE, size=FALSE, alpha=FALSE)+
+  geom_sf(data= hospitalesAgudosCABA, )+
+  geom_sf_text(data=comunas_casos, 
+               aes(label = COMUNA), colour="darkgray", size=5)+ 
+               guides(colour=FALSE, size=FALSE)+
+  labs(title= "Radios censales con mas de 200 hogares NBI en CABA", subtitle = "Hospitales publicos")+
+  theme_void()+
+  scale_fill_viridis_c()
+
+#parque indoamericano
+
+```
+
+## CABA
+```{r getbb CABA, echo=TRUE, eval=TRUE, warning=FALSE }
+
+bbox <- getbb("Ciudad Autonoma de Buenos Aires, Argentina")
+bbox # dos coordenadas de caba:  minx -58.53145 maxx-58.33514 miny-34.70564 maxy-34.52655
+
+poliCABA <- getbb("Buenos Aires, Buenos Aires, Argentina", format_out = "sf_polygon") # me salia multipoligon y depues como class: list, busuqe en internet y encontre esta solucion: agregado el codigo siguiente:
+poliCABA <- poliCABA[2][[1]]
+poliCABA
+class(poliCABA) #sf
+
+# ahora visualizo CABA con los hospis
+ggplot () +
+  geom_sf (data = poliCABA)+
+  geom_sf(data = hospitalesAgudosCABA)
+
+```
+
+## Voronoid
+```{r voronoid de CABA, echo=TRUE, eval=TRUE, warning=FALSE}
+
+voronoi_hospitalesAgudosCABA <- st_voronoi(do.call(c, st_geometry(hospitalesAgudosCABA))) %>%
+  st_collection_extract() %>%
+  st_sfc(crs = st_crs(hospitalesAgudosCABA)) %>% 
+  st_sf() %>% 
+  st_join(hospitalesAgudosCABA) %>% 
+  st_intersection(poliCABA)
+
+qtm(voronoi_hospitalesAgudosCABA)+ #el mapa dividido
+  qtm(hospitalesAgudosCABA) #hace los puntitos
+
+```
+
+## Stanem maps
+```{r stamenmap, eval=TRUE, echo=TRUE, warning=FALSE}
+# tengo el bbox con las corrdenadas de CABA
+
+#terrain
+cabaTerra <-   get_stamenmap(bbox = bbox, 
+                      maptype = "terrain", 
+                      zoom=11)
+cabaTerra
+ggmap(cabaTerra)
+
+#toner
+cabaToner <-   get_stamenmap(bbox = bbox,
+                           maptype = "toner-background",
+                           zoom = 11)
+ggmap(cabaToner)
+#interesante, aca hay unas zonas pintadas ya con puntitos... a ver en la web que refernecia tiene?
+
+#watercolor
+cabaWater <-   get_stamenmap(bbox = bbox,
+                           maptype = "watercolor",
+                           zoom = 12)
+ggmap(cabaWater)
+
+#le sumo al water los hospitales 
+ggmap(cabaWater) +
+  geom_sf(data=hospitalesAgudosCABA, inherit.aes=FALSE, color = "black", size = 2)+
+  theme_void()
+
+```
+
+
+
+## Ruteo
+Planteo un caso para hacerlo mas entretenido...
+
+José vive en pleno Parque Indoamericano y hace dos dias comenzo con fiebre, petequias y dolor corporal. Tiene un amigo médico que está haciendo la residencia en el Hospital Fernandez, que le recomendó que si tenia alguna vez un problema de salud, fuera a verlo a dicho hospital. Si bien no es necesario usar ninguna medicion ni includo los poligonos de voronoid para darse cuenta de que el Hospital Fernandez le queda mucho mas lejos que el Grieson, Piñero, Satojanni o basicamente cualquier otro, José está decidido a cruzarse toda la ciudad para ir al Fernandez .
+
+```{r ruteo, eval=TRUE, echo=TRUE, warning=FALSE}
+# coordenadas de los puntos que quiero localizar:
+
+HospFernandez <-  hospitalesCABA %>% 
+  filter(NOM_MAP == "HOSP. FERNANDEZ") %>% 
+  select(geometry)
+HospFernandez # lon=-58.40689  lat=-34.58114
+class(HospFernandez) # sf
+
+
+ParqueIndoamericano <-  rs_doscientos_nbi %>% 
+  filter(RADIO == "1") %>%    #¿como averigue que este es el radio del parque?,... probando los numeritos de Radio de la comuna 8 en la funcion, probe 12, 7 , 8 , 2 , 9... y mire en el mapa los recorridos que me decia... nefasto, pero como no me tardo mucho salio asi... intente buscar alguna base donde pudiera obtener el codifo CO_FRAC_RA en algun otro sitio; y encontre un archivo RAR ("https://www.estadisticaciudad.gob.ar/eyc/wp-content/uploads/2015/04/radios_caba_censo_2010.rar"), pero no pude abrirlo 
+  select(CENTROIDE_radios) %>% 
+ st_drop_geometry() # como me mantenia la columna de geometry y no dejaba seguir, la dropie y con el point solo pude seguir
+ParqueIndoamericano # lon=-58.48994  lat=-34.67433
+class(ParqueIndoamericano) #sf
+
+PI_HF <- osrm::osrmRoute(src = ParqueIndoamericano, 
+                  dst = HospFernandez, 
+                  #returnclass = TRUE, #sin corre dice deprecateed
+                   overview = "full")
+
+class(PI_HF)
+PI_HF # que me dice: es un linestring, su bounding box, distancia: 15 km, y duracion 21 minutos.
+
+# A ver que puedo calcular asi...
+
+velocidad <- (PI_HF$distance/PI_HF$duration)*60   # (km/min)*60 = km/h
+velocidad # El auto va a 42.8 km/h
+
+# a que velocidad tendria que ir la ambulancia para llegar en 10 minutos
+
+PI_HF$duration <- 10 # asigno 10 minutos en duracion
+PI_HF
+
+velocidadAmbu<- (PI_HF$distance/PI_HF$duration)*60   # (km/min)*60 = km/h
+velocidadAmbu # la ambulancia deberia ir a 90.5 km/h
+
+```
+
+Concluyo que Jose puede ir en auto al hospital Fernandez en aproximadamente 20 minutos... pero si requiriera llegar en 10 minutos, deberia pisar el acelerador el ambulanciero y ir a 90 km/h.
+
+
+
+
+### Ambisionando ruteo de todos los centroides200, no salio
+```{r ruteoS no salen, eval=FALSE, echo=TRUE, warning=FALSE}
+
+radios_c <- rs_doscientos_nbi$CENTROIDE_radios
+hospi_c <- hospitalesAgudosCABA$geometry
+
+class(radios_c) #stc_POINT sfc
+class(hospi_c)
+
+st_nearest_feature(radios_c,hospi_c) #lista de hospi mas cercano a cada radio
+
+st_distance(radios_c, hospi_c[st_nearest_feature(radios_c, hospi_c)], by_element = TRUE)
+
+Radio_a_Hospi <- data.frame(
+  Radio = rs_doscientos_nbi$CO_FRAC_RA, 
+  radio_c = rs_doscientos_nbi$CENTROIDE_radios, 
+  Hospital = hospitalesAgudosCABA$NOM_MAP[st_nearest_feature(radios_c,hospi_c)], 
+  hospi_c = hospitalesAgudosCABA$geometry[st_nearest_feature(radios_c,hospi_c)], 
+  Distancia = st_distance(radios_c, hospi_c[st_nearest_feature(radios_c, hospi_c)], by_element = TRUE) )
+
+summary(Radio_a_Hospi)
+
+recorridos <- list()
+
+for (i in 1:nrow(Radio_a_Hospi)) {
+  route <- osrmRoute(src = Radio_a_Hospi$radio_c[i], 
+                     dst = Radio_a_Hospi$hospi_c[i],
+                     overview = "full")
+  recorridos[[i]] <- route
+}
+
+# no pude hacer que ande, esta es la solucion que ChatGPT me dio, pero no me funciona: Error: "src" should be a vector of coordinates, a data.frame or a matrix of coordinates, an sfc POINT object or an sf POINT object.
+# le replanntee a Chat GPT y me tiro que pruebe
+
+recorridos <- list()
+
+for (i in 1:nrow(Radio_a_Hospi)) {
+  route <- osrmRoute(src = st_coordinates(Radio_a_Hospi$radio_c[i]), 
+                     dst = st_coordinates(Radio_a_Hospi$hospi_c[i]),
+                     overview = "full")
+  recorridos[[i]] <- route
+}
+#Error in UseMethod("st_coordinates") :   no applicable method for 'st_coordinates' applied to an object of class "NULL"
+
+
+```
+
+
+# Interaactivo con leaflet con todo
+```{r interactivo, eval=TRUE, echo=TRUE, warning=FALSE}
+
+
+ iconoHospi <- makeAwesomeIcon(icon = "fa-h-square",
+                 markerColor="white", #Color del marcador
+                 iconColor = "red",
+                 library="fa",
+                 spin = FALSE, # para que el ícono no gire
+                 markerOptions(fontSize=14))
+
+leaflet() %>%  
+  setView(lng = -58.4481, lat = -34.61845, zoom = 11) %>%  #coordenadas que calcule para el centro de caba 
+  addTiles() %>% 
+  addPolygons(data=comunas_string, # borde caba
+              stroke = FALSE,
+              fillOpacity = .3,
+              color = "yellow") %>% 
+  addPolylines(data=comunas_string,
+               stroke = TRUE,
+               color = "orange") %>%     # division comunas
+  addPolygons(data=voronoi_hospitalesAgudosCABA,
+              weight= 2,
+              fillOpacity = 0,
+              group = "Voronoid") %>% 
+  addPolygons(data=rs_doscientos_nbi,
+              stroke = FALSE,
+              fillOpacity = .4,
+              color = "violet",
+              popup= paste("Radio censal con más de", "<br>",
+                           "200 hogares con NBI", "<br>",
+                            "<br>",
+                           "ID:", radios$ID),  #### no se por que me tira id 3546 en todooos los cositos rojos
+              group = "Radios Criticos") %>% 
+  addCircleMarkers(data= hospitalesAgudosCABA,
+                   radius = 2,
+                   color = "darkgray",
+                  stroke = FALSE, 
+                  fillOpacity = 1,
+                  group = "Hospi Points") %>% 
+  addAwesomeMarkers(data= hospitalesAgudosCABA, 
+                    icon = iconoHospi,
+                    popup = hospitalesAgudosCABA$NOM_MAP,
+                    group = "Hospitales") %>% 
+  addPolylines(data=PI_HF, color = "green",
+               group = "Recorrido de José") %>%
+  #addPolylines(data=recorridos, color = "lightblue") %>% 
+  addLayersControl(overlayGroups = c("Radios Criticos", "Voronoid", "Hospitales", "Hospi Points", "Recorrido de José"),
+                   options = layersControlOptions(collapsed = TRUE)) %>% 
+  addMeasure(                      #  funcion que te permite medir distancia y areas dibujandolas en el mapa mismo.
+    position = "bottomleft",
+    primaryLengthUnit = "metros",
+    primaryAreaUnit = "m2",
+    activeColor = "#3D535D",
+    completedColor = "#7D4479")
+  
+ 
+```
+
+# Fallidos
+
+## Geolocalizando con geocode:OSM... pero no lo uso al final porque ya tenia los puntos 
+```{r probando geolocalizar, echo=TRUE, eval=FALSE, warning=FALSE}
+
+
+#lo que sigue es futil porque en el geojson ya tengo el punto geografico (?)
+hospitalesAgudosCABA <- hospitalesAgudosCABA %>% mutate(geo=geocode_OSM(hospitalesAgudosCABA$DIRECCION_GEO,  
+  return.first.only = TRUE,  # me devuelve solo el primer resultado encontrado
+  keep.unfound = TRUE,  # que mantenga aquellas direcciones que No pudo geolocalizar, con un null en el campo "geo"
+  details = FALSE, # que no devuelva detalles, id de OSM u objetos cercanos
+  as.sf = TRUE, # que lo convierta en un spatial frame
+    geometry = "point", 
+    server = "https://nominatim.openstreetmap.org" # Nominatim
+  ))
+
+# me devuelve que no encontro los siguientes: 
+#No results found for "CORBETA PI Y MARGAL 750, Ciudad de Buenos Aires, Argentina".  Argerich:: 
+#No results found for "PEDRO CHUTRO 3380, Ciudad de Buenos Aires, Argentina".  Penna
+#No results found for "COMBATIENTES DE MALVINAS 3002, Ciudad de Buenos Aires, Argentina". Tornu
+#No results found for "FERNANDEZ DE LA CRUZ, F., GRAL. AV. 4402 4402, Ciudad de Buenos Aires, Argentina". Grierson
+
+```
+
+
+# Intento de descargar wfs 
+```{r aca trate de descargar este wfs de indec y NO me salio, eval=FALSE, echo=TRUE, warning=FALSE}
+
+indec <- st_layers("WFS:https://geoservicios.indec.gob.ar/geoserver/wfs?getcapabilities")
+indec$name
+
+baseURL <- "https://geoservicios.indec.gob.ar/geoserver/wfs?request=GetFeature&service=WFS&typeName="
+capa_wfs <- "provisorio2022:cuadras"
+provisorio2022cuadras <- st_read(paste0(baseURL, capa_wfs))
+
+```
+
+# devolucion
+Con respecto al ruteo que no te salió. Podés ver el código que les armamos en la clase 4. Nosotros pasamos de a un par de coordenadas y luego vamos concatenando un dataframe. Si descomponés tus registros debería funcionar. Por eso te funcionó cuando ruteaste solo 1 caso.
+
+Iteramos por cada elemento de nuestro dataframe y le pasamos la función de osmrRoute
+
+for (i in 1:nrow(data))
+{
+origen <- c(#nombre = data$nombre_origen[i],
+lon = data$x_origen[i],
+lat = data$y_origen[i])
+destino <- c(#nombre = data$nombre_destino[i],
+lon = data$x_destino[i],
+lat = data$y_destino[i])
+recorrido <- osrmRoute(src = origen,
+dst = destino,
+#returnclass = TRUE,
+overview = "full")
+#Agregamos valores como columnas en el dataframe
+data$geometria[i] <- recorrido$geometry
+data$duracion[i] <- recorrido$duration
+data$distance[i] <- recorrido$distance
+}
+#Le indicamos qué columna tiene la geometría con el trazado
+data <- st_as_sf(data, sf_column_name = "geometria")
